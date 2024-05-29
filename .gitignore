@@ -1,0 +1,15 @@
+*
+!*.*
+!*/
+!Makefile
+
+compile_commands.json
+.cache
+~
+*.o
+*.pdf
+.DS_STORE
+*.dSYM
+log.txt
+Makefile
+out.txt

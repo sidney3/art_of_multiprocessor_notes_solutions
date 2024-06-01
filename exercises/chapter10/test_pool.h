@@ -18,6 +18,13 @@ using namespace std::placeholders;
     Each writer adds a fixed amount of data to the pool
 */
 
+#if defined(if_debug)
+    // already defined, no need to redefine
+#elif defined(debug) && debug
+    #define if_debug(x) (x)
+#else
+    #define if_debug(x) 
+#endif
 
 template<typename Map>
 Map merge_maps(Map&& m1, Map& m2)
@@ -51,7 +58,6 @@ void test_pool(Pool&& p)
 
     auto writer_thread = [](Pool p, int_map& my_freqs, size_t vals_to_write)
     {
-        std::cout << "writer thread arrived\n";
         for(size_t i = 0; i < vals_to_write; ++i)
         {
             int to_add = rand();
@@ -69,11 +75,11 @@ void test_pool(Pool&& p)
 
             (my_freqs)[to_add]++;
         }
+        if_debug(std::cout << std::format("thread {} finished writing\n", std::this_thread::get_id()));
     };
 
     auto reader_thread= [](Pool p, std::atomic<bool>& signal, int_map& my_freqs)
     {
-        std::cout << "reader thread arrived\n";
         while(signal.load(std::memory_order_acquire) || !p.empty())
         {
             auto val = p.deq();
@@ -82,9 +88,11 @@ void test_pool(Pool&& p)
                 (my_freqs)[*val]++;
             }
         }
+        
+        if_debug(std::cout << std::format("thread {} finished reading\n", std::this_thread::get_id()));
     };
 
-    const size_t readers = 10, writers = 10, vals_to_write = 100000;
+    const size_t readers = 20, writers = 20, vals_to_write = 10000;
     std::vector<int_map> reader_maps(readers), writer_maps(writers);
     std::vector<std::thread> reader_threads, writer_threads;
     std::atomic<bool> read_signal{ true };
@@ -114,8 +122,6 @@ void test_pool(Pool&& p)
     {
         th.join();
     }
-
-    std::cout << "writes finished\n";
 
     read_signal.store(false, std::memory_order_release);
 

@@ -4,17 +4,8 @@
 #include <iostream>
 #include <thread>
 #include <format>
+#include "test_counter.h"
 
-bool debug = false;
-
-template<typename Printable>
-void maybe_print(Printable&& p)
-{
-    if(debug)
-    {
-        std::cout << p;
-    }
-}
 
 /*
 0010101000 -> 001000000
@@ -71,7 +62,7 @@ struct Node
 
         cv.wait(lk, [this](){return !locked;});
 
-        maybe_print(std::format("thread {}: upwards Visit to state {}\n", std::this_thread::get_id(), NodeStateString(NState)));
+        if_debug(std::cout << std::format("thread {}: upwards Visit to state {}\n", std::this_thread::get_id(), NodeStateString(NState)));
 
         switch(NState)
         {
@@ -143,7 +134,7 @@ struct Node
     void storeResult(int global_result)
     {
         std::unique_lock lk{mtx};
-        maybe_print(std::format("STORE RESULT CALL: state from thread {} in storeResult {}\n", std::this_thread::get_id(), NodeStateString(NState)));
+        if_debug(std::cout << std::format("STORE RESULT CALL: state from thread {} in storeResult {}\n", std::this_thread::get_id(), NodeStateString(NState)));
 
         switch(NState)
         {
@@ -157,7 +148,7 @@ struct Node
             case NodeStates::SECOND:
             {
                 value = global_result + firstValue;
-                maybe_print(std::format("thread {}: handed off result value {}\n", std::this_thread::get_id(), value));
+                if_debug(std::cout << std::format("thread {}: handed off result value {}\n", std::this_thread::get_id(), value));
                 NState = NodeStates::RESULT;
                 cv.notify_all();
                 return;
@@ -186,15 +177,29 @@ struct Node
                 // set count of waiting nodes
                 secondValue = dependencyCount;
 
-                // this should release the threads that have this
-                // as a dependency to relock it and set result
+                /*
+                This is the scariest unlock of the program:
+
+                how do we know that another thread will not come
+                from below us and get to this node, rather than what
+                we want (which is for our parent to come deliver us
+                the value)?
+
+                When we call OP from some node A, the child path to that
+                node is all locked.
+
+                Likewise, there must be a parent that came from another
+                node (that is also locked all the way down: we get
+                this guarantee because we traverse the nodes from top
+                to bottom when delivering the result)
+                */
                 locked = false;
                 cv.notify_all();
 
                 // wait for delivery of value from parent
                 cv.wait(lk, [this](){return NState == NodeStates::RESULT;});
 
-                maybe_print(std::format("thread {}: got result delivered", std::this_thread::get_id()));
+                if_debug(std::cout << std::format("thread {}: got result delivered", std::this_thread::get_id()));
                 NState = NodeStates::IDLE;
                 locked = false;
                 cv.notify_all();
@@ -278,7 +283,7 @@ public:
         */
         for(size_t leaf = 0; leaf < leaves.size(); leaf++)
         {
-            maybe_print(std::format("leaf index: {}\n", nodes.size() - leaf - 1));
+            if_debug(std::cout << std::format("leaf index: {}\n", nodes.size() - leaf - 1));
             leaves[leaf] = &nodes[nodes.size() - leaf - 1];
         }
 
@@ -299,7 +304,23 @@ public:
 
         // traverse up the tree again, locking the nodes
         // and gathering a count of the waiting children
-        // WE are the active node
+
+        // for each child, we tell it the amount of nodes
+        // that came before it (that are also our children)
+        // so when we eventually deliver its result to it
+        // (this result coming from the root node)
+        // it can calculate its offset from this value
+
+        /*
+            For any children that are themselves active nodes
+            to some other nodes, we need to wait for their 
+            result, and so we wait until each of these children
+            unlock -> as either they are
+
+            1) only passive nodes (so we lock them directly)
+            2) active nodes (so they locked themselves and will
+            only unlock once done with their operation)
+        */
         Node* last = node;
         node = leafNode;
         int childrenCount = 1;
@@ -310,7 +331,9 @@ public:
             dependencies.push_back(node);
             node = node->parent;
         }
-        maybe_print(std::format("thread {}: {} dependencies\n", std::this_thread::get_id(), childrenCount));
+
+
+        if_debug(std::cout << std::format("thread {}: {} dependencies\n", std::this_thread::get_id(), childrenCount));
 
 
         // at this point ALL the nodes INCLUDING last are locked
@@ -325,7 +348,7 @@ public:
 
         // once we get the value from res, the node is free!
         int res = last->op(childrenCount);
-        maybe_print(std::format("thread {}: got result {}\n", std::this_thread::get_id(), res));
+        if_debug(std::cout << std::format("thread {}: got result {}\n", std::this_thread::get_id(), res));
 
         // all dependencies are locked at this point, top node is not
         // need to unlock in top down order
@@ -351,30 +374,16 @@ private:
 
 void inc_thread(TreeCounter& tc, size_t tid)
 {
-    maybe_print(std::format("thread_id: {}, idx: {}\n", std::this_thread::get_id(), tid));
+    if_debug(std::cout << std::format("thread_id: {}, idx: {}\n", std::this_thread::get_id(), tid));
     for(size_t i = 0; i < 1000; ++i)
     {
         int res = tc.getAndIncrement(tid);
         std::cout << std::format("{}\n", res);
-        maybe_print(std::format("COUNTER RESPONSE: thread: {}, value: {}\n", std::this_thread::get_id(), res));
+        if_debug(std::cout << std::format("COUNTER RESPONSE: thread: {}, value: {}\n", std::this_thread::get_id(), res));
     }
 }
 
 int main()
 {
-    static constexpr int num_threads = 10;
-
-    TreeCounter tc{num_threads};
-
-    std::array<std::thread, num_threads> counters;
-
-    for(size_t i = 0; i < num_threads; ++i)
-    {
-        counters[i] = std::thread{inc_thread, std::ref(tc), i};
-    }
-
-    for(size_t i = 0; i < num_threads; ++i)
-    {
-        counters[i].join();
-    }
+    test_counter<TreeCounter>();
 }

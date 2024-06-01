@@ -132,5 +132,157 @@ bool Node::precombine()
 }
 ```
 
+### Counting Networks
+
+Say now that we have `w` counters. Counter `i` (1 indexed) will distribute unique indices modulo `w`: `i, w + i, 2*w + i,..., k*w + i...`.
+
+Def: we say a __balancer__ is a ?thing? with two input wires and two output wires. Tokens arrive at arbitrary times and emerge on output wires, also at arbitrary times. Critically, the balancer will balance across the two wires. It can be viewed as a toggle: sends one input token to the top wire, the next to the bottom, and so on...
+
+Has two states, `up` and `down`, which describe where it will send the next token. Let `x0` and `x1` denote the number of tokens that arrive at top and bottom input wires, and `y0`, `y1` the number of tokens that leave from the top and bottom output wires. Certainly `x0 + x1 >= y0 + y1` - we never create tokens.
+
+We say a balancer is quiescent if `x0 + x1 = y0 + y1`. 
+
+We can construct a __balancing network__ by connecting a balancers output wires to other balancers output wires. Certainly using this we can create a balancer of arbitrary width (though not perhaps with equal probability of output wire).
+
+We say the __depth__ of a balancing network is the maximum number of balancers one can traverse from one end to another.. As with individual balancers, tokens are not created: `\sum x_i >= \sum y_i` And as before quiscent if these values are the same.
+
+Note that while this is visualized as switches on a network, it can just as easily be objects in memory that hold references to other balancers.
+
+The book then presents a very interesting network that satisfies the following property (where, recall, `x_i` is input count and `y_i` is output count for i/o wires `x_i`, `y_i`):
+
+```
+n = \sum x_i => y_i = (n / w) + (i mod w)
+```
+
+Note that the above is just wrong... The below is more correct (basically a question of if we get the overflow token or not)
+```
+n = \sum x_i => y_i = (n / w) + (i < (n mod w))
+```
+
+This network is specified and proven in the below python script, that is also in `notes/4_bitonic_proof.py`
+
+```python
+import math
+class TerminalWire:
+    def __init__(self, name):
+        self.count = 0
+        self.name = name
+    def pushToken(self):
+        self.count += 1
+        # print(f'Balancer {self.name} received a token')
+
+class IntermediateBalancer:
+    def __init__(self, upConnection, downConnection):
+        self.upConnection = upConnection
+        self.downConnection = downConnection
+        self.switchUp = True
+
+    def pushToken(self):
+        if self.switchUp:
+            self.upConnection.pushToken()
+            self.switchUp = False
+        else:
+            self.downConnection.pushToken()
+            self.switchUp = True 
+class SourceWire:
+    def __init__(self, Balancer):
+        self.balancer = Balancer
+    def pushToken(self):
+        self.balancer.pushToken()
+
+
+class Bitonic4:
+    def __init__(self):
+
+        self.terminals = [TerminalWire("1"), TerminalWire("2"), TerminalWire("3"), TerminalWire("4")]
+
+        self.i5, self.i6 = IntermediateBalancer(self.terminals[0], self.terminals[1]), IntermediateBalancer(self.terminals[2], self.terminals[3])
+        self.i3, self.i4 = IntermediateBalancer(self.i5, self.i6), IntermediateBalancer(self.i5, self.i6)
+        self.i1, self.i2 = IntermediateBalancer(self.i3, self.i4), IntermediateBalancer(self.i4, self.i3)
+        
+        self.sources = [SourceWire(self.i1), SourceWire(self.i1), SourceWire(self.i2), SourceWire(self.i2)]
+    def pushToWire(self, wireIndex):
+        self.sources[wireIndex].pushToken()
+    def queryTerminals(self):
+        res = [0] * len(self.terminals)
+        for i,term in enumerate(self.terminals):
+            res[i] = term.count
+        return res
+
+def allCombinations(List, CombinationSize):
+    if CombinationSize == 0:
+        return [[]]
+
+    res = []
+    for combo in allCombinations(List, CombinationSize - 1):
+        for elt in List:
+            comboCopy = combo.copy()
+            comboCopy.append(elt)
+            res.append(comboCopy)
+    return res
+
+def hasStepProperty(freqs):
+    total_tokens = sum(freqs)
+    num_wires = len(freqs)
+
+    res = True
+    for wire, wire_tokens in enumerate(freqs):
+        expected_tokens = math.ceil((total_tokens - wire) / num_wires)
+        res = res and wire_tokens == expected_tokens
+
+    return res
+
+def main():
+    assert(hasStepProperty([1,1,1,1]))
+    assert(hasStepProperty([1,1,1,0]))
+    assert(hasStepProperty([1,1,0,0]))
+    assert(hasStepProperty([1,0,0,0]))
+    assert(hasStepProperty([0,0,0,0]))
+
+    for numTokens in range(1, 9):
+        for combo in allCombinations(range(4), numTokens):
+            network = Bitonic4()
+            for wire in combo:
+                network.pushToWire(wire)
+            assert(hasStepProperty(network.queryTerminals()))
+
+if __name__ == "__main__":
+    main()
+```
+
+This is called the step property, and a balancing network satisfying it is called a __counting network__, as counting can be done by giving tokens that emerge on wire `y_i` the consecutive numbers `i, i + w, i + 2*w,...`, as we expect a token to arrive to this point every `w` pushes into the system.
+
+Makes total sense, just think about it a little bit
+
+Lemma: let `y_0,...,y_{w-1}` be a sequence of non-negative integers. Then the following are equivalent:
+
+1. For each `i,j, i < j`, `0 <= y_i - y_j <= 1`
+2. Either `y_i = y_j` for each `i < j`, or there exists some `c` such that for any `i < c` and `j >= c`, `y_i - y_j = 1`
+3. If `m = \sum y_i`, then `y_i = ceil(m - i / w)`
+
+### Bitonic Counting Network
+
+We shall now generalize the construction shown above...
+
+Define a width `w` sequence of inputs `x_0,...,x_{w-1}` to be a collection of tokens partitioned into `w` subsets `x_i`.
+
+Define a width `2k` network `Merger[2k]` as follows: two input sequences of width `k`, `x` and `x'`, and a single output sequence of width `2k`. IF both `x` and `x'` have the step property, then so does to output sequence `y` of our larger network. Define this inductively - 
+
+when `k = 1` we can get this with a single balancer, 
+
+Otherwise for `k = 2k'`, we consider two `Merger[k']` networks. We say that we have input sequences `{x_0,...,x_{k-1}}` and `{x'_0,...,x'_{k - 1}}`. We send all the even `x`'s and odd `x'`'s to one merger, and then the reverse for the other. We say that the outputs of these are `z`, `z'`. So we have a balancer for each such pair that takes in `z_i, z'_i` and goes to `y_{2*i}, y_{2*i + 1}`
+
+Proof that the if `x, x'` have the step property, then so does `y`:
+
+Proof by induction: clearly have this for `Merger[2]`. 
+
+What about this for `2*k`? Intuitively, half of the input from each of our sources goes to each of the two sub mergers. So each input source gives about half of its load to each of the two sub-mergers. So why do we need to do the balancing at the end? So the idea between merging the evens with the odds is that the difference between the number of tokens that has gone to either of the two sub-mergers will always be between one.
+
+But we don't know which one will receive the additional token first - and so this way if the number of tokens to both is the same, then certainly we will be counting up, but if we then receive a token that would offset us to being not the same, it always "starts" a new switch that will be pointing up. 
+
+The name says it all here: intuitively this can be thought of as way to take two smaller networks with the balancing property and combine them into a single network with twice the input size and still has the balancing property.
+
+Then, the `Bitonic[2k]` network by passing the outputs from two `Bitonic[k]` networks into a `Merger[2k]` network, where induction here is again that `Bitonic[2]` is just a single balancer. And we know that the step property gets preserved by the merger (that's the big goal of the merger - merge...)
+
 
 
